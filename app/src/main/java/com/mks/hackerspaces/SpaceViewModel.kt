@@ -116,7 +116,7 @@ class SpaceViewModel(application: Application) : AndroidViewModel(application) {
             val limitedDir = dir.entries.take(limit)
             
             // Fetch in batches
-            val chunkSize = 10
+            val chunkSize = 30
             val chunks = limitedDir.chunked(chunkSize)
             
             for (chunk in chunks) {

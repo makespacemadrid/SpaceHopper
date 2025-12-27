@@ -288,6 +288,21 @@ fun SpaceDetailScreen(space: SpaceApi, onBack: () -> Unit) {
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
+            if (space.logo != null) {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = rememberAsyncImagePainter(space.logo),
+                        contentDescription = "Space Logo",
+                        modifier = Modifier
+                            .size(120.dp)
+                            .padding(bottom = 16.dp)
+                    )
+                }
+            }
+
             Text("Address: ${space.location?.address ?: "Unknown"}")
             Spacer(modifier = Modifier.height(8.dp))
             Text("Status: ${if (space.state?.open == true) "Open" else "Closed"}")
