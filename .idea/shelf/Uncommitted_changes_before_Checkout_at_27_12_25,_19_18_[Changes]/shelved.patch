@@ -1,0 +1,966 @@
+Index: app/src/main/java/com/mks/hackerspaces/SpaceRepository.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package com.mks.hackerspaces\n\nimport android.content.Context\nimport androidx.datastore.preferences.core.booleanPreferencesKey\nimport androidx.datastore.preferences.core.edit\nimport androidx.datastore.preferences.core.intPreferencesKey\nimport androidx.datastore.preferences.core.longPreferencesKey\nimport androidx.datastore.preferences.core.stringPreferencesKey\nimport androidx.datastore.preferences.preferencesDataStore\nimport kotlinx.coroutines.flow.Flow\nimport kotlinx.coroutines.flow.first\nimport kotlinx.coroutines.flow.map\nimport com.google.gson.Gson\nimport com.google.gson.reflect.TypeToken\nimport kotlinx.coroutines.Dispatchers\nimport kotlinx.coroutines.withContext\nimport java.io.File\nimport java.util.concurrent.ConcurrentHashMap\n\nprivate val Context.dataStore by preferencesDataStore(name = \"settings\")\n\nclass SpaceRepository(private val context: Context) {\n    private val FAVORITES_KEY = stringPreferencesKey(\"favorites\")\n    \n    // Settings Keys\n    private val REFRESH_INTERVAL_KEY = longPreferencesKey(\"refresh_interval\") // in minutes\n    private val NOTIFICATIONS_ENABLED_KEY = booleanPreferencesKey(\"notifications_enabled\")\n    private val UNSAFE_SSL_KEY = booleanPreferencesKey(\"unsafe_ssl\")\n    private val MAX_SPACES_KEY = intPreferencesKey(\"max_spaces\")\n\n    private val gson = Gson()\n    \n    // In-memory cache for spaces\n    private val spacesCache = ConcurrentHashMap<String, SpaceApi>()\n    private val CACHE_DURATION_MS = 15 * 60 * 1000L // 15 minutes\n    private val spacesCacheTimestamp = ConcurrentHashMap<String, Long>()\n\n    // Settings Flows\n    val refreshInterval: Flow<Long> = context.dataStore.data.map { it[REFRESH_INTERVAL_KEY] ?: 15L }\n    val notificationsEnabled: Flow<Boolean> = context.dataStore.data.map { it[NOTIFICATIONS_ENABLED_KEY] ?: false }\n    val unsafeSsl: Flow<Boolean> = context.dataStore.data.map { it[UNSAFE_SSL_KEY] ?: true }\n    val maxSpaces: Flow<Int> = context.dataStore.data.map { it[MAX_SPACES_KEY] ?: 200 }\n\n    suspend fun updateRefreshInterval(minutes: Long) {\n        context.dataStore.edit { it[REFRESH_INTERVAL_KEY] = minutes }\n    }\n\n    suspend fun updateNotificationsEnabled(enabled: Boolean) {\n        context.dataStore.edit { it[NOTIFICATIONS_ENABLED_KEY] = enabled }\n    }\n\n    suspend fun updateUnsafeSsl(enabled: Boolean) {\n        context.dataStore.edit { it[UNSAFE_SSL_KEY] = enabled }\n        // We need to invalidate the Retrofit instance effectively\n        RetrofitInstance.reset()\n    }\n\n    suspend fun updateMaxSpaces(max: Int) {\n        context.dataStore.edit { it[MAX_SPACES_KEY] = max }\n    }\n\n    suspend fun getDirectory(): Map<String, String> {\n        // We pass the SSL setting check to the network layer indirectly via RetrofitInstance re-creation\n        // But here we just call the api.\n        return RetrofitInstance.getApi(isUnsafeSslEnabled()).getDirectory()\n    }\n\n    private suspend fun isUnsafeSslEnabled(): Boolean {\n        return try {\n             context.dataStore.data.first()[UNSAFE_SSL_KEY] ?: true\n        } catch (e: Exception) { true }\n    }\n\n    suspend fun getSpace(url: String, forceRefresh: Boolean = false): SpaceApi {\n        if (!forceRefresh) {\n            val cachedSpace = spacesCache[url]\n            val timestamp = spacesCacheTimestamp[url]\n            \n            if (cachedSpace != null && timestamp != null) {\n                if (System.currentTimeMillis() - timestamp < CACHE_DURATION_MS) {\n                    return cachedSpace\n                }\n            }\n        }\n        \n        return withContext(Dispatchers.IO) {\n            val isUnsafe = context.dataStore.data.first()[UNSAFE_SSL_KEY] ?: true\n            val space = RetrofitInstance.getApi(isUnsafe).getSpace(url).copy(url = url)\n            \n            if (space.space == null) throw Exception(\"Invalid space data: name missing\")\n            \n            spacesCache[url] = space\n            spacesCacheTimestamp[url] = System.currentTimeMillis()\n            space\n        }\n    }\n\n    val favorites: Flow<Set<String>> = context.dataStore.data\n        .map { preferences ->\n            val json = preferences[FAVORITES_KEY] ?: \"[]\"\n            val type = object : TypeToken<Set<String>>() {}.type\n            gson.fromJson(json, type)\n        }\n\n    suspend fun toggleFavorite(spaceName: String) {\n        context.dataStore.edit { preferences ->\n            val json = preferences[FAVORITES_KEY] ?: \"[]\"\n            val type = object : TypeToken<MutableSet<String>>() {}.type\n            val currentFavorites: MutableSet<String> = gson.fromJson(json, type)\n            \n            if (currentFavorites.contains(spaceName)) {\n                currentFavorites.remove(spaceName)\n            } else {\n                currentFavorites.add(spaceName)\n            }\n            \n            preferences[FAVORITES_KEY] = gson.toJson(currentFavorites)\n        }\n    }\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/mks/hackerspaces/SpaceRepository.kt b/app/src/main/java/com/mks/hackerspaces/SpaceRepository.kt
+--- a/app/src/main/java/com/mks/hackerspaces/SpaceRepository.kt	(revision 46626cd91629b031dfd3645fcdb4f8ded6cbd78c)
++++ b/app/src/main/java/com/mks/hackerspaces/SpaceRepository.kt	(date 1766858195754)
+@@ -21,6 +21,7 @@
+ 
+ class SpaceRepository(private val context: Context) {
+     private val FAVORITES_KEY = stringPreferencesKey("favorites")
++    private val NOTIFICATION_SPACES_KEY = stringPreferencesKey("notification_spaces")
+     
+     // Settings Keys
+     private val REFRESH_INTERVAL_KEY = longPreferencesKey("refresh_interval") // in minutes
+@@ -101,20 +102,43 @@
+             val type = object : TypeToken<Set<String>>() {}.type
+             gson.fromJson(json, type)
+         }
++        
++    val notificationSpaces: Flow<Set<String>> = context.dataStore.data
++        .map { preferences ->
++            val json = preferences[NOTIFICATION_SPACES_KEY] ?: "[]"
++            val type = object : TypeToken<Set<String>>() {}.type
++            gson.fromJson(json, type)
++        }
+ 
+-    suspend fun toggleFavorite(spaceName: String) {
++    suspend fun toggleFavorite(spaceUrl: String) {
+         context.dataStore.edit { preferences ->
+             val json = preferences[FAVORITES_KEY] ?: "[]"
+             val type = object : TypeToken<MutableSet<String>>() {}.type
+             val currentFavorites: MutableSet<String> = gson.fromJson(json, type)
+             
+-            if (currentFavorites.contains(spaceName)) {
+-                currentFavorites.remove(spaceName)
++            if (currentFavorites.contains(spaceUrl)) {
++                currentFavorites.remove(spaceUrl)
+             } else {
+-                currentFavorites.add(spaceName)
++                currentFavorites.add(spaceUrl)
+             }
+             
+             preferences[FAVORITES_KEY] = gson.toJson(currentFavorites)
+         }
+     }
++    
++    suspend fun toggleNotification(spaceUrl: String) {
++        context.dataStore.edit { preferences ->
++            val json = preferences[NOTIFICATION_SPACES_KEY] ?: "[]"
++            val type = object : TypeToken<MutableSet<String>>() {}.type
++            val currentNotifications: MutableSet<String> = gson.fromJson(json, type)
++            
++            if (currentNotifications.contains(spaceUrl)) {
++                currentNotifications.remove(spaceUrl)
++            } else {
++                currentNotifications.add(spaceUrl)
++            }
++            
++            preferences[NOTIFICATION_SPACES_KEY] = gson.toJson(currentNotifications)
++        }
++    }
+ }
+Index: app/src/main/java/com/mks/hackerspaces/SpaceWidgetMinimalReceiver.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/mks/hackerspaces/SpaceWidgetMinimalReceiver.kt b/app/src/main/java/com/mks/hackerspaces/SpaceWidgetMinimalReceiver.kt
+new file mode 100644
+--- /dev/null	(date 1766857827446)
++++ b/app/src/main/java/com/mks/hackerspaces/SpaceWidgetMinimalReceiver.kt	(date 1766857827446)
+@@ -0,0 +1,8 @@
++package com.mks.hackerspaces
++
++import androidx.glance.appwidget.GlanceAppWidget
++import androidx.glance.appwidget.GlanceAppWidgetReceiver
++
++class SpaceWidgetMinimalReceiver : GlanceAppWidgetReceiver() {
++    override val glanceAppWidget: GlanceAppWidget = SpaceWidgetMinimal()
++}
+Index: app/src/main/AndroidManifest.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\n    xmlns:tools=\"http://schemas.android.com/tools\">\n\n    <uses-permission android:name=\"android.permission.INTERNET\" />\n\n    <application\n        android:allowBackup=\"true\"\n        android:dataExtractionRules=\"@xml/data_extraction_rules\"\n        android:fullBackupContent=\"@xml/backup_rules\"\n        android:icon=\"@mipmap/ic_launcher\"\n        android:label=\"@string/app_name\"\n        android:roundIcon=\"@mipmap/ic_launcher_round\"\n        android:supportsRtl=\"true\"\n        android:theme=\"@style/Theme.HackerSpaces\">\n        <activity\n            android:name=\".MainActivity\"\n            android:exported=\"true\"\n            android:label=\"@string/app_name\"\n            android:theme=\"@style/Theme.HackerSpaces\">\n            <intent-filter>\n                <action android:name=\"android.intent.action.MAIN\" />\n\n                <category android:name=\"android.intent.category.LAUNCHER\" />\n            </intent-filter>\n        </activity>\n    </application>\n\n</manifest>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+--- a/app/src/main/AndroidManifest.xml	(revision 46626cd91629b031dfd3645fcdb4f8ded6cbd78c)
++++ b/app/src/main/AndroidManifest.xml	(date 1766857822013)
+@@ -3,6 +3,7 @@
+     xmlns:tools="http://schemas.android.com/tools">
+ 
+     <uses-permission android:name="android.permission.INTERNET" />
++    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+ 
+     <application
+         android:allowBackup="true"
+@@ -24,6 +25,37 @@
+                 <category android:name="android.intent.category.LAUNCHER" />
+             </intent-filter>
+         </activity>
++
++        <activity
++            android:name=".SpaceWidgetConfigurationActivity"
++            android:exported="true"
++            android:theme="@style/Theme.HackerSpaces">
++            <intent-filter>
++                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
++            </intent-filter>
++        </activity>
++
++        <receiver
++            android:name=".SpaceWidgetReceiver"
++            android:exported="true">
++            <intent-filter>
++                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
++            </intent-filter>
++            <meta-data
++                android:name="android.appwidget.provider"
++                android:resource="@xml/space_widget_info" />
++        </receiver>
++
++        <receiver
++            android:name=".SpaceWidgetMinimalReceiver"
++            android:exported="true">
++            <intent-filter>
++                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
++            </intent-filter>
++            <meta-data
++                android:name="android.appwidget.provider"
++                android:resource="@xml/space_widget_minimal_info" />
++        </receiver>
+     </application>
+ 
+ </manifest>
+\ No newline at end of file
+Index: app/src/main/java/com/mks/hackerspaces/SpaceWidgetMinimal.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/mks/hackerspaces/SpaceWidgetMinimal.kt b/app/src/main/java/com/mks/hackerspaces/SpaceWidgetMinimal.kt
+new file mode 100644
+--- /dev/null	(date 1766857869796)
++++ b/app/src/main/java/com/mks/hackerspaces/SpaceWidgetMinimal.kt	(date 1766857869796)
+@@ -0,0 +1,111 @@
++package com.mks.hackerspaces
++
++import android.content.Context
++import android.graphics.Bitmap
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.unit.dp
++import androidx.core.graphics.drawable.toBitmap
++import androidx.datastore.preferences.core.stringPreferencesKey
++import androidx.glance.GlanceId
++import androidx.glance.GlanceModifier
++import androidx.glance.Image
++import androidx.glance.ImageProvider
++import androidx.glance.action.clickable
++import androidx.glance.appwidget.GlanceAppWidget
++import androidx.glance.appwidget.action.actionRunCallback
++import androidx.glance.appwidget.provideContent
++import androidx.glance.background
++import androidx.glance.layout.Alignment
++import androidx.glance.layout.Box
++import androidx.glance.layout.fillMaxSize
++import androidx.glance.layout.padding
++import androidx.glance.layout.size
++import androidx.glance.text.Text
++import androidx.glance.text.TextStyle
++import androidx.glance.unit.ColorProvider
++import coil.ImageLoader
++import coil.request.ImageRequest
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.flow.map
++
++class SpaceWidgetMinimal : GlanceAppWidget() {
++    override suspend fun provideGlance(context: Context, id: GlanceId) {
++        val repo = SpaceRepository(context)
++        val spaceUrl = try {
++            context.widgetDataStore.data.map { it[stringPreferencesKey("widget_space_url")] }.first()
++        } catch (e: Exception) {
++            null
++        }
++        
++        var space: SpaceApi? = null
++        var iconBitmap: Bitmap? = null
++        
++        if (spaceUrl != null) {
++            try {
++                space = repo.getSpace(spaceUrl)
++                // Load state icon
++                val iconUrl = if (space.state?.open == true) space.state?.icon?.open else space.state?.icon?.closed
++                
++                if (!iconUrl.isNullOrEmpty()) {
++                    try {
++                        val loader = ImageLoader(context)
++                        val request = ImageRequest.Builder(context)
++                            .data(iconUrl)
++                            .size(128, 128) 
++                            .allowHardware(false)
++                            .build()
++                        val result = loader.execute(request)
++                        iconBitmap = result.drawable?.toBitmap()
++                    } catch (e: Exception) {
++                        e.printStackTrace()
++                    }
++                }
++            } catch (e: Exception) {
++                // Error
++            }
++        }
++
++        provideContent {
++            // Transparent or Minimal background
++            // We use a very subtle dark background for visibility or fully transparent if icon is good enough
++            // Let's use circle shape background if possible or just rounded corners
++            val bgColor = ColorProvider(Color.Black.copy(alpha = 0.4f)) // Semi-transparent
++            
++            Box(
++                modifier = GlanceModifier
++                    .fillMaxSize()
++                    .background(bgColor)
++                    .clickable(actionRunCallback<UpdateWidgetAction>())
++                    .padding(8.dp),
++                contentAlignment = Alignment.Center
++            ) {
++                if (space != null) {
++                    val isOpen = space.state?.open == true
++                    val statusColor = if (isOpen) Color(0xFF00FF00) else Color(0xFFFF0000)
++                    
++                    if (iconBitmap != null) {
++                         Image(
++                            provider = ImageProvider(iconBitmap!!),
++                            contentDescription = if (isOpen) "Open" else "Closed",
++                            modifier = GlanceModifier.fillMaxSize()
++                        )
++                    } else {
++                        // Minimal colored box indicator if no icon
++                        Box(
++                            modifier = GlanceModifier
++                                .size(32.dp)
++                                .background(ColorProvider(statusColor))
++                        ) {}
++                    }
++                } else {
++                    // Loading or Error State - Minimal dot
++                    Box(
++                        modifier = GlanceModifier
++                            .size(12.dp)
++                            .background(ColorProvider(Color.Gray))
++                    ) {}
++                }
++            }
++        }
++    }
++}
+Index: app/src/main/res/xml/space_widget_info.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/res/xml/space_widget_info.xml b/app/src/main/res/xml/space_widget_info.xml
+new file mode 100644
+--- /dev/null	(date 1766855108661)
++++ b/app/src/main/res/xml/space_widget_info.xml	(date 1766855108661)
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="utf-8"?>
++<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
++    android:description="@string/app_name"
++    android:initialLayout="@layout/glance_default_loading_layout"
++    android:minWidth="110dp"
++    android:minHeight="60dp"
++    android:resizeMode="horizontal|vertical"
++    android:updatePeriodMillis="1800000"
++    android:widgetCategory="home_screen"
++    android:configure="com.mks.hackerspaces.SpaceWidgetConfigurationActivity" />
+Index: app/src/main/java/com/mks/hackerspaces/MainActivity.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package com.mks.hackerspaces\n\nimport android.os.Bundle\nimport androidx.activity.ComponentActivity\nimport androidx.activity.compose.setContent\nimport androidx.activity.enableEdgeToEdge\nimport androidx.activity.viewModels\nimport androidx.compose.foundation.Image\nimport androidx.compose.foundation.clickable\nimport androidx.compose.foundation.layout.*\nimport androidx.compose.foundation.lazy.LazyColumn\nimport androidx.compose.foundation.lazy.items\nimport androidx.compose.foundation.rememberScrollState\nimport androidx.compose.foundation.verticalScroll\nimport androidx.compose.material.icons.Icons\nimport androidx.compose.material.icons.filled.Add\nimport androidx.compose.material.icons.filled.Delete\nimport androidx.compose.material.icons.filled.Favorite\nimport androidx.compose.material.icons.filled.Home\nimport androidx.compose.material.icons.filled.Info\nimport androidx.compose.material.icons.filled.List\nimport androidx.compose.material.icons.filled.LocationOn\nimport androidx.compose.material.icons.filled.Refresh\nimport androidx.compose.material.icons.filled.Search\nimport androidx.compose.material.icons.filled.Settings\nimport androidx.compose.material3.*\nimport androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold\nimport androidx.compose.runtime.*\nimport androidx.compose.runtime.saveable.rememberSaveable\nimport androidx.compose.ui.Alignment\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.graphics.Color\nimport androidx.compose.ui.graphics.vector.ImageVector\nimport androidx.compose.ui.platform.LocalContext\nimport androidx.compose.ui.text.font.FontWeight\nimport androidx.compose.ui.unit.dp\nimport coil.compose.rememberAsyncImagePainter\nimport com.mks.hackerspaces.ui.theme.HackerSpacesTheme\n\nclass MainActivity : ComponentActivity() {\n    private val viewModel: SpaceViewModel by viewModels()\n\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        enableEdgeToEdge()\n        setContent {\n            HackerSpacesTheme {\n                HackerSpacesApp(viewModel)\n            }\n        }\n    }\n}\n\n@Composable\nfun HackerSpacesApp(viewModel: SpaceViewModel) {\n    var currentDestination by rememberSaveable { mutableStateOf(AppDestinations.MY_SPACES) }\n    val selectedSpace by viewModel.selectedSpace.collectAsState()\n\n    if (selectedSpace != null) {\n        SpaceDetailScreen(\n            space = selectedSpace!!,\n            onBack = { viewModel.clearSelectedSpace() }\n        )\n    } else {\n        NavigationSuiteScaffold(\n            navigationSuiteItems = {\n                AppDestinations.entries.forEach {\n                    item(\n                        icon = {\n                            Icon(\n                                it.icon,\n                                contentDescription = it.label\n                            )\n                        },\n                        label = { Text(it.label) },\n                        selected = it == currentDestination,\n                        onClick = { currentDestination = it }\n                    )\n                }\n            }\n        ) {\n            Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->\n                Box(modifier = Modifier.padding(innerPadding)) {\n                    when (currentDestination) {\n                        AppDestinations.MY_SPACES -> MySpacesScreen(viewModel)\n                        AppDestinations.DIRECTORY -> DirectoryScreen(viewModel)\n                        AppDestinations.MAP -> MapScreen(viewModel)\n                        AppDestinations.SETTINGS -> SettingsScreen(viewModel)\n                    }\n                }\n            }\n        }\n    }\n}\n\nenum class AppDestinations(\n    val label: String,\n    val icon: ImageVector,\n) {\n    MY_SPACES(\"MySpaces\", Icons.Default.Favorite),\n    DIRECTORY(\"Directory\", Icons.Default.List),\n    MAP(\"Map\", Icons.Default.LocationOn),\n    SETTINGS(\"Settings\", Icons.Default.Settings)\n}\n\n@Composable\nfun MySpacesScreen(viewModel: SpaceViewModel) {\n    val mySpaces by viewModel.mySpaces.collectAsState()\n\n    Box(modifier = Modifier.fillMaxSize()) {\n        if (mySpaces.isEmpty()) {\n            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {\n                Text(\"No favorite spaces yet. Add some from the Directory!\")\n            }\n        } else {\n            LazyColumn {\n                items(mySpaces) { space ->\n                    SpaceItem(\n                        space = space,\n                        onClick = { viewModel.selectSpace(space) },\n                        onRemove = { viewModel.toggleFavorite(space.url) },\n                        isFavorite = true\n                    )\n                }\n            }\n        }\n\n        FloatingActionButton(\n            onClick = { viewModel.refreshMySpaces() },\n            modifier = Modifier\n                .align(Alignment.BottomEnd)\n                .padding(16.dp)\n        ) {\n            Icon(Icons.Default.Refresh, contentDescription = \"Refresh Status\")\n        }\n    }\n}\n\n@Composable\nfun DirectoryScreen(viewModel: SpaceViewModel) {\n    val directory by viewModel.directory.collectAsState()\n    val favorites by viewModel.favorites.collectAsState(initial = emptySet())\n    var searchQuery by rememberSaveable { mutableStateOf(\"\") }\n\n    Box(modifier = Modifier.fillMaxSize()) {\n        Column(modifier = Modifier.fillMaxSize()) {\n            OutlinedTextField(\n                value = searchQuery,\n                onValueChange = { searchQuery = it },\n                modifier = Modifier\n                    .fillMaxWidth()\n                    .padding(8.dp),\n                placeholder = { Text(\"Search spaces...\") },\n                leadingIcon = { Icon(Icons.Default.Search, contentDescription = \"Search\") },\n                singleLine = true\n            )\n\n            LazyColumn {\n                val filteredItems = directory.toList().filter { (name, _) ->\n                    name.contains(searchQuery, ignoreCase = true)\n                }\n\n                items(filteredItems) { (name, url) ->\n                    DirectoryItem(\n                        name = name,\n                        url = url,\n                        isFavorite = favorites.contains(url),\n                        onToggleFavorite = { viewModel.toggleFavorite(url) }\n                    )\n                }\n            }\n        }\n\n        FloatingActionButton(\n            onClick = { viewModel.fetchDirectory() },\n            modifier = Modifier\n                .align(Alignment.BottomEnd)\n                .padding(16.dp)\n        ) {\n            Icon(Icons.Default.Refresh, contentDescription = \"Refresh Directory\")\n        }\n    }\n}\n\n@Composable\nfun SpaceItem(\n    space: SpaceApi,\n    onClick: () -> Unit,\n    onRemove: () -> Unit,\n    isFavorite: Boolean\n) {\n    Card(\n        modifier = Modifier\n            .fillMaxWidth()\n            .padding(8.dp)\n            .clickable(onClick = onClick),\n        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)\n    ) {\n        Row(\n            modifier = Modifier\n                .padding(16.dp)\n                .fillMaxWidth(),\n            verticalAlignment = Alignment.CenterVertically\n        ) {\n            val isOpen = space.state?.open == true\n            val iconUrl = if (isOpen) space.state?.icon?.open else space.state?.icon?.closed\n            \n            if (iconUrl != null) {\n                Image(\n                    painter = rememberAsyncImagePainter(iconUrl),\n                    contentDescription = null,\n                    modifier = Modifier.size(40.dp)\n                )\n            } else {\n                 Icon(\n                     if (isOpen) Icons.Default.Home else Icons.Default.Info, // Placeholder if no icon\n                     contentDescription = null,\n                     tint = if (isOpen) Color.Green else Color.Red,\n                     modifier = Modifier.size(40.dp)\n                 )\n            }\n            Spacer(modifier = Modifier.width(16.dp))\n            Column(modifier = Modifier.weight(1f)) {\n                Text(text = space.space ?: \"Unknown\", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)\n                Text(\n                    text = if (isOpen) \"Open\" else \"Closed\",\n                    color = if (isOpen) Color.Green else Color.Red\n                )\n            }\n            IconButton(onClick = onRemove) {\n                Icon(Icons.Default.Delete, contentDescription = \"Remove\")\n            }\n        }\n    }\n}\n\n\n@Composable\nfun DirectoryItem(\n    name: String,\n    url: String,\n    isFavorite: Boolean,\n    onToggleFavorite: () -> Unit\n) {\n    Card(\n        modifier = Modifier\n            .fillMaxWidth()\n            .padding(8.dp),\n        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)\n    ) {\n        Row(\n            modifier = Modifier\n                .padding(16.dp)\n                .fillMaxWidth(),\n            verticalAlignment = Alignment.CenterVertically,\n            horizontalArrangement = Arrangement.SpaceBetween\n        ) {\n            Text(text = name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)\n            IconButton(onClick = onToggleFavorite) {\n                Icon(\n                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.Add,\n                    contentDescription = if (isFavorite) \"Remove from favorites\" else \"Add to favorites\",\n                    tint = if (isFavorite) Color.Red else LocalContentColor.current\n                )\n            }\n        }\n    }\n}\n\n@OptIn(ExperimentalMaterial3Api::class)\n@Composable\nfun SpaceDetailScreen(space: SpaceApi, onBack: () -> Unit) {\n    Scaffold(\n        topBar = {\n            TopAppBar(\n                title = { Text(space.space ?: \"Details\") },\n                navigationIcon = {\n                    IconButton(onClick = onBack) {\n                        Icon(Icons.Default.Home, contentDescription = \"Back\") // Using Home as back for now or ArrowBack\n                    }\n                }\n            )\n        }\n    ) { innerPadding ->\n        Column(\n            modifier = Modifier\n                .padding(innerPadding)\n                .padding(16.dp)\n                .verticalScroll(rememberScrollState())\n        ) {\n            if (space.logo != null) {\n                Box(\n                    modifier = Modifier.fillMaxWidth(),\n                    contentAlignment = Alignment.Center\n                ) {\n                    Image(\n                        painter = rememberAsyncImagePainter(space.logo),\n                        contentDescription = \"Space Logo\",\n                        modifier = Modifier\n                            .size(120.dp)\n                            .padding(bottom = 16.dp)\n                    )\n                }\n            }\n\n            Text(\"Address: ${space.location?.address ?: \"Unknown\"}\")\n            Spacer(modifier = Modifier.height(8.dp))\n            Text(\"Status: ${if (space.state?.open == true) \"Open\" else \"Closed\"}\")\n            \n            space.contact?.let { contact ->\n                Spacer(modifier = Modifier.height(16.dp))\n                Text(\"Contact\", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)\n                contact.phone?.let { Text(\"Phone: $it\") }\n                contact.email?.let { Text(\"Email: $it\") }\n                contact.twitter?.let { Text(\"Twitter: $it\") }\n                contact.instagram?.let { Text(\"Instagram: $it\") }\n            }\n\n            space.sensors?.let { sensors ->\n                Spacer(modifier = Modifier.height(16.dp))\n                Text(\"Sensors\", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)\n                \n                sensors.temperature?.forEach { sensor ->\n                    Text(\"Temperature (${sensor.location ?: \"Unknown\"}): ${sensor.value} ${sensor.unit}\")\n                }\n                sensors.humidity?.forEach { sensor ->\n                    Text(\"Humidity (${sensor.location ?: \"Unknown\"}): ${sensor.value} ${sensor.unit}\")\n                }\n                sensors.powerConsumption?.forEach { sensor ->\n                    Text(\"Power (${sensor.location ?: \"Unknown\"}): ${sensor.value} ${sensor.unit}\")\n                }\n            }\n        }\n    }\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/mks/hackerspaces/MainActivity.kt b/app/src/main/java/com/mks/hackerspaces/MainActivity.kt
+--- a/app/src/main/java/com/mks/hackerspaces/MainActivity.kt	(revision 46626cd91629b031dfd3645fcdb4f8ded6cbd78c)
++++ b/app/src/main/java/com/mks/hackerspaces/MainActivity.kt	(date 1766859229446)
+@@ -13,16 +13,17 @@
+ import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.foundation.verticalScroll
+ import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.automirrored.filled.List
+ import androidx.compose.material.icons.filled.Add
+ import androidx.compose.material.icons.filled.Delete
+ import androidx.compose.material.icons.filled.Favorite
+ import androidx.compose.material.icons.filled.Home
+ import androidx.compose.material.icons.filled.Info
+-import androidx.compose.material.icons.filled.List
+ import androidx.compose.material.icons.filled.LocationOn
+ import androidx.compose.material.icons.filled.Refresh
+ import androidx.compose.material.icons.filled.Search
+ import androidx.compose.material.icons.filled.Settings
++import androidx.compose.material.icons.filled.Notifications
+ import androidx.compose.material3.*
+ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
+ import androidx.compose.runtime.*
+@@ -31,7 +32,6 @@
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.graphics.Color
+ import androidx.compose.ui.graphics.vector.ImageVector
+-import androidx.compose.ui.platform.LocalContext
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.unit.dp
+ import coil.compose.rememberAsyncImagePainter
+@@ -59,6 +59,7 @@
+     if (selectedSpace != null) {
+         SpaceDetailScreen(
+             space = selectedSpace!!,
++            viewModel = viewModel,
+             onBack = { viewModel.clearSelectedSpace() }
+         )
+     } else {
+@@ -98,7 +99,7 @@
+     val icon: ImageVector,
+ ) {
+     MY_SPACES("MySpaces", Icons.Default.Favorite),
+-    DIRECTORY("Directory", Icons.Default.List),
++    DIRECTORY("Directory", Icons.AutoMirrored.Filled.List),
+     MAP("Map", Icons.Default.LocationOn),
+     SETTINGS("Settings", Icons.Default.Settings)
+ }
+@@ -106,6 +107,7 @@
+ @Composable
+ fun MySpacesScreen(viewModel: SpaceViewModel) {
+     val mySpaces by viewModel.mySpaces.collectAsState()
++    val notificationSpaces by viewModel.notificationSpaces.collectAsState(initial = emptySet())
+ 
+     Box(modifier = Modifier.fillMaxSize()) {
+         if (mySpaces.isEmpty()) {
+@@ -119,7 +121,8 @@
+                         space = space,
+                         onClick = { viewModel.selectSpace(space) },
+                         onRemove = { viewModel.toggleFavorite(space.url) },
+-                        isFavorite = true
++                        isNotify = notificationSpaces.contains(space.url),
++                        onToggleNotify = { viewModel.toggleNotification(space.url) }
+                     )
+                 }
+             }
+@@ -163,7 +166,6 @@
+                 items(filteredItems) { (name, url) ->
+                     DirectoryItem(
+                         name = name,
+-                        url = url,
+                         isFavorite = favorites.contains(url),
+                         onToggleFavorite = { viewModel.toggleFavorite(url) }
+                     )
+@@ -187,7 +189,8 @@
+     space: SpaceApi,
+     onClick: () -> Unit,
+     onRemove: () -> Unit,
+-    isFavorite: Boolean
++    isNotify: Boolean,
++    onToggleNotify: () -> Unit
+ ) {
+     Card(
+         modifier = Modifier
+@@ -227,6 +230,15 @@
+                     color = if (isOpen) Color.Green else Color.Red
+                 )
+             }
++            
++            IconButton(onClick = onToggleNotify) {
++                 Icon(
++                    imageVector = Icons.Default.Notifications,
++                    contentDescription = if (isNotify) "Disable notifications" else "Enable notifications",
++                    tint = if (isNotify) MaterialTheme.colorScheme.primary else LocalContentColor.current.copy(alpha = 0.3f)
++                )
++            }
++
+             IconButton(onClick = onRemove) {
+                 Icon(Icons.Default.Delete, contentDescription = "Remove")
+             }
+@@ -238,7 +250,6 @@
+ @Composable
+ fun DirectoryItem(
+     name: String,
+-    url: String,
+     isFavorite: Boolean,
+     onToggleFavorite: () -> Unit
+ ) {
+@@ -269,7 +280,10 @@
+ 
+ @OptIn(ExperimentalMaterial3Api::class)
+ @Composable
+-fun SpaceDetailScreen(space: SpaceApi, onBack: () -> Unit) {
++fun SpaceDetailScreen(space: SpaceApi, viewModel: SpaceViewModel, onBack: () -> Unit) {
++    val notificationSpaces by viewModel.notificationSpaces.collectAsState(initial = emptySet())
++    val isNotify = notificationSpaces.contains(space.url)
++
+     Scaffold(
+         topBar = {
+             TopAppBar(
+@@ -278,6 +292,15 @@
+                     IconButton(onClick = onBack) {
+                         Icon(Icons.Default.Home, contentDescription = "Back") // Using Home as back for now or ArrowBack
+                     }
++                },
++                actions = {
++                    IconButton(onClick = { viewModel.toggleNotification(space.url) }) {
++                        Icon(
++                            imageVector = Icons.Default.Notifications,
++                            contentDescription = if (isNotify) "Disable notifications" else "Enable notifications",
++                            tint = if (isNotify) MaterialTheme.colorScheme.primary else LocalContentColor.current.copy(alpha = 0.3f)
++                        )
++                    }
+                 }
+             )
+         }
+Index: app/src/main/res/xml/space_widget_minimal_info.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/res/xml/space_widget_minimal_info.xml b/app/src/main/res/xml/space_widget_minimal_info.xml
+new file mode 100644
+--- /dev/null	(date 1766857813985)
++++ b/app/src/main/res/xml/space_widget_minimal_info.xml	(date 1766857813985)
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="utf-8"?>
++<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
++    android:description="@string/app_name"
++    android:initialLayout="@layout/glance_default_loading_layout"
++    android:minWidth="60dp"
++    android:minHeight="60dp"
++    android:resizeMode="horizontal|vertical"
++    android:updatePeriodMillis="1800000"
++    android:widgetCategory="home_screen"
++    android:configure="com.mks.hackerspaces.SpaceWidgetConfigurationActivity" />
+Index: app/src/main/java/com/mks/hackerspaces/SpaceWidgetConfigurationActivity.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/mks/hackerspaces/SpaceWidgetConfigurationActivity.kt b/app/src/main/java/com/mks/hackerspaces/SpaceWidgetConfigurationActivity.kt
+new file mode 100644
+--- /dev/null	(date 1766857883632)
++++ b/app/src/main/java/com/mks/hackerspaces/SpaceWidgetConfigurationActivity.kt	(date 1766857883632)
+@@ -0,0 +1,143 @@
++package com.mks.hackerspaces
++
++import android.appwidget.AppWidgetManager
++import android.content.Intent
++import android.os.Bundle
++import androidx.activity.ComponentActivity
++import androidx.activity.compose.setContent
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.items
++import androidx.compose.material3.Card
++import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.ExperimentalMaterial3Api
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Scaffold
++import androidx.compose.material3.Text
++import androidx.compose.material3.TopAppBar
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.collectAsState
++import androidx.compose.runtime.getValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.unit.dp
++import androidx.datastore.preferences.core.edit
++import androidx.datastore.preferences.core.stringPreferencesKey
++import androidx.glance.appwidget.GlanceAppWidgetManager
++import androidx.lifecycle.lifecycleScope
++import kotlinx.coroutines.launch
++import com.mks.hackerspaces.ui.theme.HackerSpacesTheme
++
++class SpaceWidgetConfigurationActivity : ComponentActivity() {
++    private var appWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
++
++    override fun onCreate(savedInstanceState: Bundle?) {
++        super.onCreate(savedInstanceState)
++        
++        val intent = intent
++        val extras = intent.extras
++        if (extras != null) {
++            appWidgetId = extras.getInt(
++                AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID
++            )
++        }
++
++        if (appWidgetId == AppWidgetManager.INVALID_APPWIDGET_ID) {
++            finish()
++            return
++        }
++
++        val resultValue = Intent()
++        resultValue.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
++        setResult(RESULT_CANCELED, resultValue)
++
++        setContent {
++            HackerSpacesTheme {
++                WidgetConfigScreen(
++                    onSpaceSelected = { url ->
++                        saveAndFinish(url)
++                    }
++                )
++            }
++        }
++    }
++
++    private fun saveAndFinish(url: String) {
++        lifecycleScope.launch {
++            try {
++                widgetDataStore.edit { 
++                    it[stringPreferencesKey("widget_space_url")] = url
++                }
++
++                try {
++                    val manager = GlanceAppWidgetManager(this@SpaceWidgetConfigurationActivity)
++                    val glanceId = manager.getGlanceIdBy(appWidgetId)
++                    if (glanceId != null) {
++                        // Check if it is Minimal or Normal widget based on ID or try updating both
++                        // Since we don't know easily which class this ID belongs to without querying,
++                        // and updating the wrong one might be harmless or throw.
++                        // GlanceAppWidgetManager.getGlanceIdBy returns a GlanceId which contains the provider class info implicitly.
++                        // We can just try to update both classes for this ID, one will succeed.
++                        
++                        try {
++                            SpaceWidget().update(this@SpaceWidgetConfigurationActivity, glanceId)
++                        } catch (e: Exception) {}
++                        
++                        try {
++                            SpaceWidgetMinimal().update(this@SpaceWidgetConfigurationActivity, glanceId)
++                        } catch (e: Exception) {}
++                    }
++                } catch (e: Exception) {
++                }
++            } catch (e: Exception) {
++            } finally {
++                val resultValue = Intent()
++                resultValue.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
++                setResult(RESULT_OK, resultValue)
++                finish()
++            }
++        }
++    }
++}
++
++@OptIn(ExperimentalMaterial3Api::class)
++@Composable
++fun WidgetConfigScreen(onSpaceSelected: (String) -> Unit) {
++    val context = LocalContext.current
++    val repo = SpaceRepository(context)
++    val favorites by repo.favorites.collectAsState(initial = emptySet())
++    
++    Scaffold(
++        topBar = { TopAppBar(title = { Text("Select a Space for Widget") }) }
++    ) { innerPadding ->
++        Box(modifier = Modifier.padding(innerPadding)) {
++            if (favorites.isEmpty()) {
++                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
++                    Text("No favorite spaces found. Add some in the app first!")
++                }
++            } else {
++                LazyColumn {
++                    items(favorites.toList()) { url ->
++                        Card(
++                            modifier = Modifier
++                                .fillMaxWidth()
++                                .padding(8.dp)
++                                .clickable { onSpaceSelected(url) },
++                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
++                        ) {
++                            Column(modifier = Modifier.padding(16.dp)) {
++                                Text(text = "Space: $url", style = MaterialTheme.typography.bodyLarge) 
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
+Index: gradle/libs.versions.toml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>[versions]\nagp = \"8.13.2\"\nkotlin = \"2.0.21\"\ncoreKtx = \"1.17.0\"\njunit = \"4.13.2\"\njunitVersion = \"1.3.0\"\nespressoCore = \"3.7.0\"\nlifecycleRuntimeKtx = \"2.10.0\"\nactivityCompose = \"1.12.2\"\ncomposeBom = \"2024.09.00\"\nretrofit = \"2.9.0\"\ncoil = \"2.6.0\"\ndatastore = \"1.0.0\"\ngson = \"2.10.1\"\nosmdroid = \"6.1.18\"\n\n[libraries]\nandroidx-core-ktx = { group = \"androidx.core\", name = \"core-ktx\", version.ref = \"coreKtx\" }\njunit = { group = \"junit\", name = \"junit\", version.ref = \"junit\" }\nandroidx-junit = { group = \"androidx.test.ext\", name = \"junit\", version.ref = \"junitVersion\" }\nandroidx-espresso-core = { group = \"androidx.test.espresso\", name = \"espresso-core\", version.ref = \"espressoCore\" }\nandroidx-lifecycle-runtime-ktx = { group = \"androidx.lifecycle\", name = \"lifecycle-runtime-ktx\", version.ref = \"lifecycleRuntimeKtx\" }\nandroidx-activity-compose = { group = \"androidx.activity\", name = \"activity-compose\", version.ref = \"activityCompose\" }\nandroidx-compose-bom = { group = \"androidx.compose\", name = \"compose-bom\", version.ref = \"composeBom\" }\nandroidx-compose-ui = { group = \"androidx.compose.ui\", name = \"ui\" }\nandroidx-compose-ui-graphics = { group = \"androidx.compose.ui\", name = \"ui-graphics\" }\nandroidx-compose-ui-tooling = { group = \"androidx.compose.ui\", name = \"ui-tooling\" }\nandroidx-compose-ui-tooling-preview = { group = \"androidx.compose.ui\", name = \"ui-tooling-preview\" }\nandroidx-compose-ui-test-manifest = { group = \"androidx.compose.ui\", name = \"ui-test-manifest\" }\nandroidx-compose-ui-test-junit4 = { group = \"androidx.compose.ui\", name = \"ui-test-junit4\" }\nandroidx-compose-material3 = { group = \"androidx.compose.material3\", name = \"material3\" }\nandroidx-compose-material3-adaptive-navigation-suite = { group = \"androidx.compose.material3\", name = \"material3-adaptive-navigation-suite\" }\nretrofit = { group = \"com.squareup.retrofit2\", name = \"retrofit\", version.ref = \"retrofit\" }\nretrofit-converter-gson = { group = \"com.squareup.retrofit2\", name = \"converter-gson\", version.ref = \"retrofit\" }\ncoil-compose = { group = \"io.coil-kt\", name = \"coil-compose\", version.ref = \"coil\" }\nandroidx-datastore-preferences = { group = \"androidx.datastore\", name = \"datastore-preferences\", version.ref = \"datastore\" }\ngson = { group = \"com.google.code.gson\", name = \"gson\", version.ref = \"gson\" }\nosmdroid-android = { group = \"org.osmdroid\", name = \"osmdroid-android\", version.ref = \"osmdroid\" }\n\n[plugins]\nandroid-application = { id = \"com.android.application\", version.ref = \"agp\" }\nkotlin-android = { id = \"org.jetbrains.kotlin.android\", version.ref = \"kotlin\" }\nkotlin-compose = { id = \"org.jetbrains.kotlin.plugin.compose\", version.ref = \"kotlin\" }\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+--- a/gradle/libs.versions.toml	(revision 46626cd91629b031dfd3645fcdb4f8ded6cbd78c)
++++ b/gradle/libs.versions.toml	(date 1766851716422)
+@@ -13,6 +13,8 @@
+ datastore = "1.0.0"
+ gson = "2.10.1"
+ osmdroid = "6.1.18"
++glance = "1.1.0"
++work = "2.9.1"
+ 
+ [libraries]
+ androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+@@ -36,6 +38,9 @@
+ androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+ gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+ osmdroid-android = { group = "org.osmdroid", name = "osmdroid-android", version.ref = "osmdroid" }
++androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
++androidx-glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
++androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
+ 
+ [plugins]
+ android-application = { id = "com.android.application", version.ref = "agp" }
+Index: app/src/main/java/com/mks/hackerspaces/SpaceWidgetReceiver.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/mks/hackerspaces/SpaceWidgetReceiver.kt b/app/src/main/java/com/mks/hackerspaces/SpaceWidgetReceiver.kt
+new file mode 100644
+--- /dev/null	(date 1766851766732)
++++ b/app/src/main/java/com/mks/hackerspaces/SpaceWidgetReceiver.kt	(date 1766851766732)
+@@ -0,0 +1,8 @@
++package com.mks.hackerspaces
++
++import androidx.glance.appwidget.GlanceAppWidget
++import androidx.glance.appwidget.GlanceAppWidgetReceiver
++
++class SpaceWidgetReceiver : GlanceAppWidgetReceiver() {
++    override val glanceAppWidget: GlanceAppWidget = SpaceWidget()
++}
+Index: app/build.gradle.kts
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>plugins {\n    alias(libs.plugins.android.application)\n    alias(libs.plugins.kotlin.android)\n    alias(libs.plugins.kotlin.compose)\n}\n\nandroid {\n    namespace = \"com.mks.hackerspaces\"\n    compileSdk {\n        version = release(36)\n    }\n\n    defaultConfig {\n        applicationId = \"com.mks.hackerspaces\"\n        minSdk = 23\n        targetSdk = 36\n        versionCode = 1\n        versionName = \"1.0\"\n\n        testInstrumentationRunner = \"androidx.test.runner.AndroidJUnitRunner\"\n    }\n\n    buildTypes {\n        release {\n            isMinifyEnabled = false\n            proguardFiles(\n                getDefaultProguardFile(\"proguard-android-optimize.txt\"),\n                \"proguard-rules.pro\"\n            )\n        }\n    }\n    compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_11\n        targetCompatibility = JavaVersion.VERSION_11\n    }\n    kotlinOptions {\n        jvmTarget = \"11\"\n    }\n    buildFeatures {\n        compose = true\n    }\n}\n\ndependencies {\n    implementation(libs.androidx.core.ktx)\n    implementation(libs.androidx.lifecycle.runtime.ktx)\n    implementation(libs.androidx.activity.compose)\n    implementation(platform(libs.androidx.compose.bom))\n    implementation(libs.androidx.compose.ui)\n    implementation(libs.androidx.compose.ui.graphics)\n    implementation(libs.androidx.compose.ui.tooling.preview)\n    implementation(libs.androidx.compose.material3)\n    implementation(libs.androidx.compose.material3.adaptive.navigation.suite)\n    \n    implementation(libs.retrofit)\n    implementation(libs.retrofit.converter.gson)\n    implementation(libs.coil.compose)\n    implementation(libs.androidx.datastore.preferences)\n    implementation(libs.gson)\n    implementation(libs.osmdroid.android)\n\n    testImplementation(libs.junit)\n    androidTestImplementation(libs.androidx.junit)\n    androidTestImplementation(libs.androidx.espresso.core)\n    androidTestImplementation(platform(libs.androidx.compose.bom))\n    androidTestImplementation(libs.androidx.compose.ui.test.junit4)\n    debugImplementation(libs.androidx.compose.ui.tooling)\n    debugImplementation(libs.androidx.compose.ui.test.manifest)\n}
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+--- a/app/build.gradle.kts	(revision 46626cd91629b031dfd3645fcdb4f8ded6cbd78c)
++++ b/app/build.gradle.kts	(date 1766851695721)
+@@ -58,6 +58,10 @@
+     implementation(libs.androidx.datastore.preferences)
+     implementation(libs.gson)
+     implementation(libs.osmdroid.android)
++    
++    implementation(libs.androidx.work.runtime.ktx)
++    implementation(libs.androidx.glance.appwidget)
++    implementation(libs.androidx.glance.material3)
+ 
+     testImplementation(libs.junit)
+     androidTestImplementation(libs.androidx.junit)
+Index: app/src/main/java/com/mks/hackerspaces/SpaceViewModel.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package com.mks.hackerspaces\n\nimport android.app.Application\nimport androidx.lifecycle.AndroidViewModel\nimport androidx.lifecycle.viewModelScope\nimport kotlinx.coroutines.Job\nimport kotlinx.coroutines.async\nimport kotlinx.coroutines.awaitAll\nimport kotlinx.coroutines.flow.MutableStateFlow\nimport kotlinx.coroutines.flow.StateFlow\nimport kotlinx.coroutines.flow.asStateFlow\nimport kotlinx.coroutines.flow.combine\nimport kotlinx.coroutines.flow.first\nimport kotlinx.coroutines.launch\n\nenum class MapFilter {\n    MY_SPACES,\n    ALL_SPACES\n}\n\nclass SpaceViewModel(application: Application) : AndroidViewModel(application) {\n    private val repository = SpaceRepository(application)\n\n    private val _directory = MutableStateFlow<Map<String, String>>(emptyMap())\n    val directory: StateFlow<Map<String, String>> = _directory.asStateFlow()\n\n    private val _mySpaces = MutableStateFlow<List<SpaceApi>>(emptyList())\n    val mySpaces: StateFlow<List<SpaceApi>> = _mySpaces.asStateFlow()\n    \n    private val _mapFilter = MutableStateFlow(MapFilter.MY_SPACES)\n    val mapFilter: StateFlow<MapFilter> = _mapFilter.asStateFlow()\n\n    // Cache for all loaded spaces (from directory)\n    private val _allLoadedSpaces = MutableStateFlow<Map<String, SpaceApi>>(emptyMap())\n\n    // Combined flow for map spaces based on filter\n    val spacesWithLocation: StateFlow<List<SpaceApi>> = combine(\n        _mapFilter,\n        _mySpaces,\n        _allLoadedSpaces\n    ) { filter, mySpaces, allSpacesMap ->\n        when (filter) {\n            MapFilter.MY_SPACES -> mySpaces\n            MapFilter.ALL_SPACES -> allSpacesMap.values.toList()\n        }\n    }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000), emptyList())\n\n    private val _selectedSpace = MutableStateFlow<SpaceApi?>(null)\n    val selectedSpace: StateFlow<SpaceApi?> = _selectedSpace.asStateFlow()\n    \n    val refreshInterval = repository.refreshInterval\n    val notificationsEnabled = repository.notificationsEnabled\n    val unsafeSsl = repository.unsafeSsl\n    val maxSpaces = repository.maxSpaces\n\n    private var loadAllJob: Job? = null\n\n    init {\n        fetchDirectory()\n        viewModelScope.launch {\n            repository.favorites.collect { favorites ->\n                refreshMySpaces(favorites)\n            }\n        }\n        \n        // React to unsafe SSL changes to maybe refresh data? \n        // For now, next fetch will pick it up.\n    }\n    \n    private fun <T> kotlinx.coroutines.flow.Flow<T>.stateIn(\n        scope: kotlinx.coroutines.CoroutineScope,\n        started: kotlinx.coroutines.flow.SharingStarted,\n        initialValue: T\n    ): StateFlow<T> {\n        val mutable = MutableStateFlow(initialValue)\n        scope.launch {\n            this@stateIn.collect {\n                mutable.value = it\n            }\n        }\n        return mutable.asStateFlow()\n    }\n\n    fun updateRefreshInterval(minutes: Long) {\n        viewModelScope.launch { repository.updateRefreshInterval(minutes) }\n    }\n\n    fun updateNotificationsEnabled(enabled: Boolean) {\n        viewModelScope.launch { repository.updateNotificationsEnabled(enabled) }\n    }\n\n    fun updateUnsafeSsl(enabled: Boolean) {\n        viewModelScope.launch { repository.updateUnsafeSsl(enabled) }\n    }\n\n    fun updateMaxSpaces(max: Int) {\n        viewModelScope.launch { repository.updateMaxSpaces(max) }\n    }\n\n    fun setMapFilter(filter: MapFilter) {\n        _mapFilter.value = filter\n        if (filter == MapFilter.ALL_SPACES && _allLoadedSpaces.value.isEmpty()) {\n            loadAllSpaces()\n        }\n    }\n\n    private fun loadAllSpaces() {\n        if (loadAllJob?.isActive == true) return\n        \n        loadAllJob = viewModelScope.launch {\n            val dir = _directory.value\n            if (dir.isEmpty()) return@launch\n            \n            // Get max spaces from settings\n            val limit = maxSpaces.first()\n            val limitedDir = dir.entries.take(limit)\n            \n            // Fetch in batches\n            val chunkSize = 30\n            val chunks = limitedDir.chunked(chunkSize)\n            \n            for (chunk in chunks) {\n                if (_mapFilter.value != MapFilter.ALL_SPACES) break \n                \n                val deferred = chunk.map { (_, url) ->\n                    async {\n                        try {\n                            repository.getSpace(url)\n                        } catch (e: Exception) {\n                            null\n                        }\n                    }\n                }\n                \n                val results = deferred.awaitAll().filterNotNull()\n                \n                val currentMap = _allLoadedSpaces.value.toMutableMap()\n                results.forEach { space ->\n                    if (space.location?.lat != null && space.location.lon != null) {\n                        currentMap[space.url] = space\n                    }\n                }\n                _allLoadedSpaces.value = currentMap\n            }\n        }\n    }\n\n    fun fetchDirectory() {\n        viewModelScope.launch {\n            try {\n                _directory.value = repository.getDirectory()\n            } catch (e: Exception) {\n                e.printStackTrace()\n                // Handle error\n            }\n        }\n    }\n\n    fun refreshMySpaces() {\n        viewModelScope.launch {\n            val favorites = repository.favorites.first()\n            refreshMySpaces(favorites)\n        }\n    }\n\n    private suspend fun refreshMySpaces(favorites: Set<String>) {\n        val deferredSpaces = favorites.map { url ->\n            viewModelScope.async {\n                try {\n                    repository.getSpace(url)\n                } catch (e: Exception) {\n                    e.printStackTrace()\n                    null\n                }\n            }\n        }\n        val spaces = deferredSpaces.awaitAll().filterNotNull()\n        _mySpaces.value = spaces\n    }\n\n    fun toggleFavorite(spaceUrl: String) {\n        viewModelScope.launch {\n            repository.toggleFavorite(spaceUrl)\n        }\n    }\n\n    fun selectSpace(space: SpaceApi) {\n        _selectedSpace.value = space\n    }\n    \n    fun clearSelectedSpace() {\n        _selectedSpace.value = null\n    }\n    \n    val favorites = repository.favorites\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/mks/hackerspaces/SpaceViewModel.kt b/app/src/main/java/com/mks/hackerspaces/SpaceViewModel.kt
+--- a/app/src/main/java/com/mks/hackerspaces/SpaceViewModel.kt	(revision 46626cd91629b031dfd3645fcdb4f8ded6cbd78c)
++++ b/app/src/main/java/com/mks/hackerspaces/SpaceViewModel.kt	(date 1766858212050)
+@@ -52,6 +52,8 @@
+     val notificationsEnabled = repository.notificationsEnabled
+     val unsafeSsl = repository.unsafeSsl
+     val maxSpaces = repository.maxSpaces
++    
++    val notificationSpaces = repository.notificationSpaces
+ 
+     private var loadAllJob: Job? = null
+ 
+@@ -69,7 +71,7 @@
+     
+     private fun <T> kotlinx.coroutines.flow.Flow<T>.stateIn(
+         scope: kotlinx.coroutines.CoroutineScope,
+-        started: kotlinx.coroutines.flow.SharingStarted,
++        @Suppress("UNUSED_PARAMETER") started: kotlinx.coroutines.flow.SharingStarted,
+         initialValue: T
+     ): StateFlow<T> {
+         val mutable = MutableStateFlow(initialValue)
+@@ -183,6 +185,12 @@
+             repository.toggleFavorite(spaceUrl)
+         }
+     }
++    
++    fun toggleNotification(spaceUrl: String) {
++        viewModelScope.launch {
++            repository.toggleNotification(spaceUrl)
++        }
++    }
+ 
+     fun selectSpace(space: SpaceApi) {
+         _selectedSpace.value = space
+Index: app/src/main/java/com/mks/hackerspaces/SpaceWidget.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/mks/hackerspaces/SpaceWidget.kt b/app/src/main/java/com/mks/hackerspaces/SpaceWidget.kt
+new file mode 100644
+--- /dev/null	(date 1766858661866)
++++ b/app/src/main/java/com/mks/hackerspaces/SpaceWidget.kt	(date 1766858661866)
+@@ -0,0 +1,250 @@
++package com.mks.hackerspaces
++
++import android.content.Context
++import android.graphics.Bitmap
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import androidx.core.graphics.drawable.toBitmap
++import androidx.datastore.preferences.core.edit
++import androidx.datastore.preferences.core.stringPreferencesKey
++import androidx.datastore.preferences.preferencesDataStore
++import androidx.glance.GlanceId
++import androidx.glance.GlanceModifier
++import androidx.glance.Image
++import androidx.glance.ImageProvider
++import androidx.glance.action.ActionParameters
++import androidx.glance.action.clickable
++import androidx.glance.appwidget.GlanceAppWidget
++import androidx.glance.appwidget.action.ActionCallback
++import androidx.glance.appwidget.action.actionRunCallback
++import androidx.glance.appwidget.provideContent
++import androidx.glance.background
++import androidx.glance.layout.Alignment
++import androidx.glance.layout.Box
++import androidx.glance.layout.Column
++import androidx.glance.layout.Row
++import androidx.glance.layout.Spacer
++import androidx.glance.layout.fillMaxSize
++import androidx.glance.layout.fillMaxWidth
++import androidx.glance.layout.height
++import androidx.glance.layout.padding
++import androidx.glance.layout.size
++import androidx.glance.layout.width
++import androidx.glance.text.FontWeight
++import androidx.glance.text.Text
++import androidx.glance.text.TextStyle
++import androidx.glance.unit.ColorProvider
++import androidx.work.*
++import coil.ImageLoader
++import coil.request.ImageRequest
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.flow.map
++import java.util.concurrent.TimeUnit
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.os.Build
++import androidx.core.app.NotificationCompat
++import androidx.core.app.NotificationManagerCompat
++
++val Context.widgetDataStore by preferencesDataStore("widget_settings")
++
++class SpaceWidget : GlanceAppWidget() {
++    override suspend fun provideGlance(context: Context, id: GlanceId) {
++        val repo = SpaceRepository(context)
++        val spaceUrl = try {
++            context.widgetDataStore.data.map { it[stringPreferencesKey("widget_space_url")] }.first()
++        } catch (e: Exception) {
++            null
++        }
++        
++        var space: SpaceApi? = null
++        var errorMessage: String? = null
++        var iconBitmap: Bitmap? = null
++        
++        if (spaceUrl != null) {
++            try {
++                space = repo.getSpace(spaceUrl)
++                
++                // Try to load space state icon (open/closed) instead of logo
++                val iconUrl = if (space.state?.open == true) space.state?.icon?.open else space.state?.icon?.closed
++                
++                if (!iconUrl.isNullOrEmpty()) {
++                    try {
++                        val loader = ImageLoader(context)
++                        val request = ImageRequest.Builder(context)
++                            .data(iconUrl)
++                            .size(128, 128) 
++                            .allowHardware(false) // Important for Widgets
++                            .build()
++                        val result = loader.execute(request)
++                        iconBitmap = result.drawable?.toBitmap()
++                    } catch (e: Exception) {
++                        e.printStackTrace()
++                    }
++                }
++            } catch (e: Exception) {
++                errorMessage = "Connection Error"
++            }
++        } else {
++             errorMessage = "Tap to configure"
++        }
++
++        provideContent {
++            // Semi-transparent background
++            val bgColor = ColorProvider(Color.Black.copy(alpha = 0.6f))
++            val textColor = ColorProvider(Color.White)
++
++            Box(
++                modifier = GlanceModifier
++                    .fillMaxSize()
++                    .background(bgColor)
++                    .clickable(actionRunCallback<UpdateWidgetAction>())
++                    .padding(12.dp),
++                contentAlignment = Alignment.Center
++            ) {
++                if (space != null) {
++                    val isOpen = space.state?.open == true
++                    val statusColor = if (isOpen) Color(0xFF00FF00) else Color(0xFFFF0000)
++
++                    Row(
++                        modifier = GlanceModifier.fillMaxWidth(),
++                        verticalAlignment = Alignment.CenterVertically
++                    ) {
++                        // State Icon
++                        if (iconBitmap != null) {
++                            Image(
++                                provider = ImageProvider(iconBitmap!!),
++                                contentDescription = "Space Status Icon",
++                                modifier = GlanceModifier.size(48.dp)
++                            )
++                        } else {
++                            // Fallback to Grasshopper if no specific icon
++                            Image(
++                                provider = ImageProvider(R.drawable.ic_launcher_foreground),
++                                contentDescription = "App Icon",
++                                modifier = GlanceModifier.size(48.dp)
++                            )
++                        }
++
++                        Spacer(modifier = GlanceModifier.width(16.dp))
++
++                        Column(modifier = GlanceModifier.defaultWeight()) {
++                            // Space Name
++                            val name = space.space ?: "Unknown"
++                            Text(
++                                text = name,
++                                style = TextStyle(
++                                    color = textColor,
++                                    fontSize = 16.sp,
++                                    fontWeight = FontWeight.Bold
++                                ),
++                                maxLines = 1
++                            )
++                            
++                            Spacer(modifier = GlanceModifier.height(4.dp))
++
++                            // Status Text
++                            Text(
++                                text = if (isOpen) "OPEN" else "CLOSED",
++                                style = TextStyle(
++                                    color = ColorProvider(statusColor),
++                                    fontSize = 14.sp,
++                                    fontWeight = FontWeight.Bold
++                                )
++                            )
++                        }
++                    }
++                } else {
++                     Text(errorMessage ?: "Loading...", style = TextStyle(color = textColor))
++                }
++            }
++        }
++    }
++}
++
++class UpdateWidgetAction : ActionCallback {
++    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
++        SpaceWidget().update(context, glanceId)
++        val workManager = WorkManager.getInstance(context)
++        workManager.enqueue(OneTimeWorkRequestBuilder<WidgetUpdateWorker>().build())
++    }
++}
++
++class WidgetUpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
++    override suspend fun doWork(): Result {
++        val repo = SpaceRepository(applicationContext)
++        val notificationsEnabled = repo.notificationsEnabled.first()
++        val notificationSpaces = repo.notificationSpaces.first()
++
++        // 1. Update Widget Data
++        val widgetSpaceUrl = try {
++            applicationContext.widgetDataStore.data.map { it[stringPreferencesKey("widget_space_url")] }.first()
++        } catch (e: Exception) { null }
++
++        if (widgetSpaceUrl != null) {
++            try {
++                repo.getSpace(widgetSpaceUrl, forceRefresh = true)
++                try {
++                    val manager = androidx.glance.appwidget.GlanceAppWidgetManager(applicationContext)
++                    val glanceIds = manager.getGlanceIds(SpaceWidget::class.java)
++                    glanceIds.forEach { glanceId ->
++                        SpaceWidget().update(applicationContext, glanceId)
++                    }
++                    val minimalIds = manager.getGlanceIds(SpaceWidgetMinimal::class.java)
++                    minimalIds.forEach { glanceId ->
++                         SpaceWidgetMinimal().update(applicationContext, glanceId)
++                    }
++                } catch (e: Exception) {}
++            } catch (e: Exception) {}
++        }
++        
++        // 2. Check Notifications for ALL monitored spaces
++        if (notificationsEnabled && notificationSpaces.isNotEmpty()) {
++             notificationSpaces.forEach { spaceUrl ->
++                 try {
++                     val newSpaceData = repo.getSpace(spaceUrl, forceRefresh = true)
++                     
++                     val prefs = applicationContext.widgetDataStore 
++                     val lastStatusKey = stringPreferencesKey("last_status_$spaceUrl")
++                     val lastStatus = prefs.data.map { it[lastStatusKey] }.first()
++                     val currentStatus = if (newSpaceData.state?.open == true) "open" else "closed"
++                     
++                     if (lastStatus != null && lastStatus != currentStatus) {
++                         showNotification(applicationContext, newSpaceData.space ?: "Space", currentStatus, spaceUrl.hashCode())
++                     }
++                     
++                     applicationContext.widgetDataStore.edit { it[lastStatusKey] = currentStatus }
++                 } catch (e: Exception) {
++                     // Continue to next space
++                 }
++             }
++        }
++
++        return Result.success()
++    }
++
++    private fun showNotification(context: Context, spaceName: String, status: String, notificationId: Int) {
++        val channelId = "space_status_channel"
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            val name = "Space Status Updates"
++            val importance = NotificationManager.IMPORTANCE_DEFAULT
++            val channel = NotificationChannel(channelId, name, importance)
++            val notificationManager = context.getSystemService(NotificationManager::class.java)
++            notificationManager.createNotificationChannel(channel)
++        }
++
++        val builder = NotificationCompat.Builder(context, channelId)
++            .setSmallIcon(R.drawable.ic_launcher_foreground) 
++            .setContentTitle("Space Status Update")
++            .setContentText("$spaceName is now $status!")
++            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
++            .setAutoCancel(true)
++
++        with(NotificationManagerCompat.from(context)) {
++            try {
++                notify(notificationId, builder.build())
++            } catch (e: SecurityException) {}
++        }
++    }
++}
