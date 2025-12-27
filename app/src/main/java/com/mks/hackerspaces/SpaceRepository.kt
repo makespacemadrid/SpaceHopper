@@ -21,6 +21,7 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 
 class SpaceRepository(private val context: Context) {
     private val FAVORITES_KEY = stringPreferencesKey("favorites")
+    private val NOTIFICATION_SPACES_KEY = stringPreferencesKey("notification_spaces")
     
     // Settings Keys
     private val REFRESH_INTERVAL_KEY = longPreferencesKey("refresh_interval") // in minutes
@@ -101,20 +102,43 @@ class SpaceRepository(private val context: Context) {
             val type = object : TypeToken<Set<String>>() {}.type
             gson.fromJson(json, type)
         }
+        
+    val notificationSpaces: Flow<Set<String>> = context.dataStore.data
+        .map { preferences ->
+            val json = preferences[NOTIFICATION_SPACES_KEY] ?: "[]"
+            val type = object : TypeToken<Set<String>>() {}.type
+            gson.fromJson(json, type)
+        }
 
-    suspend fun toggleFavorite(spaceName: String) {
+    suspend fun toggleFavorite(spaceUrl: String) {
         context.dataStore.edit { preferences ->
             val json = preferences[FAVORITES_KEY] ?: "[]"
             val type = object : TypeToken<MutableSet<String>>() {}.type
             val currentFavorites: MutableSet<String> = gson.fromJson(json, type)
             
-            if (currentFavorites.contains(spaceName)) {
-                currentFavorites.remove(spaceName)
+            if (currentFavorites.contains(spaceUrl)) {
+                currentFavorites.remove(spaceUrl)
             } else {
-                currentFavorites.add(spaceName)
+                currentFavorites.add(spaceUrl)
             }
             
             preferences[FAVORITES_KEY] = gson.toJson(currentFavorites)
+        }
+    }
+    
+    suspend fun toggleNotification(spaceUrl: String) {
+        context.dataStore.edit { preferences ->
+            val json = preferences[NOTIFICATION_SPACES_KEY] ?: "[]"
+            val type = object : TypeToken<MutableSet<String>>() {}.type
+            val currentNotifications: MutableSet<String> = gson.fromJson(json, type)
+            
+            if (currentNotifications.contains(spaceUrl)) {
+                currentNotifications.remove(spaceUrl)
+            } else {
+                currentNotifications.add(spaceUrl)
+            }
+            
+            preferences[NOTIFICATION_SPACES_KEY] = gson.toJson(currentNotifications)
         }
     }
 }
