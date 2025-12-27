@@ -69,7 +69,7 @@ class SpaceViewModel(application: Application) : AndroidViewModel(application) {
     
     private fun <T> kotlinx.coroutines.flow.Flow<T>.stateIn(
         scope: kotlinx.coroutines.CoroutineScope,
-        started: kotlinx.coroutines.flow.SharingStarted,
+        @Suppress("UNUSED_PARAMETER") started: kotlinx.coroutines.flow.SharingStarted,
         initialValue: T
     ): StateFlow<T> {
         val mutable = MutableStateFlow(initialValue)

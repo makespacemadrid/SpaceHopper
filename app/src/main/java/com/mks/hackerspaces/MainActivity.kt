@@ -13,12 +13,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -98,7 +98,7 @@ enum class AppDestinations(
     val icon: ImageVector,
 ) {
     MY_SPACES("MySpaces", Icons.Default.Favorite),
-    DIRECTORY("Directory", Icons.Default.List),
+    DIRECTORY("Directory", Icons.AutoMirrored.Filled.List),
     MAP("Map", Icons.Default.LocationOn),
     SETTINGS("Settings", Icons.Default.Settings)
 }
@@ -118,8 +118,7 @@ fun MySpacesScreen(viewModel: SpaceViewModel) {
                     SpaceItem(
                         space = space,
                         onClick = { viewModel.selectSpace(space) },
-                        onRemove = { viewModel.toggleFavorite(space.url) },
-                        isFavorite = true
+                        onRemove = { viewModel.toggleFavorite(space.url) }
                     )
                 }
             }
@@ -163,7 +162,6 @@ fun DirectoryScreen(viewModel: SpaceViewModel) {
                 items(filteredItems) { (name, url) ->
                     DirectoryItem(
                         name = name,
-                        url = url,
                         isFavorite = favorites.contains(url),
                         onToggleFavorite = { viewModel.toggleFavorite(url) }
                     )
@@ -186,8 +184,7 @@ fun DirectoryScreen(viewModel: SpaceViewModel) {
 fun SpaceItem(
     space: SpaceApi,
     onClick: () -> Unit,
-    onRemove: () -> Unit,
-    isFavorite: Boolean
+    onRemove: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -238,7 +235,6 @@ fun SpaceItem(
 @Composable
 fun DirectoryItem(
     name: String,
-    url: String,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit
 ) {
